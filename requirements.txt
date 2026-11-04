@@ -1,0 +1,4 @@
+# No third-party packages are required: the server uses only the Python 3.10+ standard library
+# (http.server, sqlite3, a built-in RFC 6455 WebSocket implementation).
+# Optional, only for the browser test in tests/e2e_browser.py:
+# playwright

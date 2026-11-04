@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>BCPS Student Chat</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main id="login" class="login hidden">
+    <form id="login-form" class="login-card" autocomplete="off">
+      <div class="logo">B</div>
+      <h1>BCPS Student Chat</h1>
+      <p class="demo-note">Local demo only. Display names do <strong>not</strong> verify who you are. Never enter a real BCPS password or personal information.</p>
+      <label for="login-name">Display name</label>
+      <input id="login-name" maxlength="24" required placeholder="e.g. Alex M">
+      <details>
+        <summary>I have an owner claim code</summary>
+        <input id="login-code" maxlength="64" placeholder="Owner claim code (from the server console)" autocomplete="off">
+      </details>
+      <button type="submit" class="primary">Enter chat</button>
+      <p id="login-error" class="error" role="alert"></p>
+    </form>
+  </main>
+
+  <div id="app" class="app hidden">
+    <nav class="rail" id="rail" aria-label="Servers"></nav>
+    <aside class="sidebar" id="sidebar">
+      <button class="server-head" id="server-head"><span id="server-name"></span><span aria-hidden="true">▾</span></button>
+      <div class="channels" id="channels"></div>
+      <div class="userbar">
+        <div class="avatar" id="me-avatar"></div>
+        <div class="me-info"><div id="me-name" class="me-name"></div><div id="me-role" class="me-role"></div></div>
+        <button id="btn-me" class="icon-btn" title="Edit profile" aria-label="Edit profile">✎</button>
+        <button id="btn-logout" class="icon-btn" title="Sign out" aria-label="Sign out">⏻</button>
+      </div>
+    </aside>
+    <section class="main">
+      <header class="topbar">
+        <button id="btn-nav" class="icon-btn mobile-only" aria-label="Open channels">☰</button>
+        <span class="hash">#</span><strong id="ch-name"></strong><span id="ch-topic" class="topic"></span>
+        <span id="conn-state" class="conn" title="Connection"></span>
+        <button id="btn-members" class="icon-btn" aria-label="Toggle member list">👥</button>
+      </header>
+      <div class="messages" id="messages" aria-live="polite"></div>
+      <form id="composer" class="composer" autocomplete="off">
+        <input id="msg-input" maxlength="500" placeholder="Message" aria-label="Message">
+        <button type="submit" class="primary">Send</button>
+      </form>
+    </section>
+    <aside class="members" id="members" aria-label="Members"></aside>
+    <div class="scrim" id="scrim"></div>
+  </div>
+
+  <dialog id="modal">
+    <div class="modal-head"><h2 id="modal-title"></h2><button id="modal-close" class="icon-btn" aria-label="Close">✕</button></div>
+    <div id="modal-body" class="modal-body"></div>
+  </dialog>
+  <div id="toast" class="toast hidden" role="status"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
