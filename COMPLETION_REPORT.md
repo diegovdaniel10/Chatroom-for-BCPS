@@ -1,9 +1,9 @@
 # Completion Report
 
-Tested: Python 3.12 on Linux - 29 automated tests pass (`python -m unittest discover -s tests`), plus a headless
-Chromium run (login, real-time message delivery between two browsers, live role change, XSS text rendered inert,
-mobile layout). **Not tested on a real Windows machine**: the code uses only portable standard-library calls and
-`run.bat` is simple, but please run `run.bat` and `run_tests.bat` once on Windows to confirm.
+Tested: Python 3.12 on Linux - 29 automated tests pass (`./run_tests.sh`), plus a headless Chromium run (the same
+engine as Chrome on ChromeOS): login, real-time delivery between two browsers, live role change, XSS text rendered inert,
+phone-width layout. **Not tested on a physical Chromebook** (no device available); the client is plain HTML/CSS/JS with
+no installs, and message tools are always visible on touch screens. Please open it once on a school Chromebook.
 
 ## Completed features
 - **Nine roles in the exact order**, each with its own color and badge: Student, Normie, Helper, Moderator, Admin,
@@ -54,6 +54,6 @@ Rules: nobody can change their own role; you can only act on members strictly be
 ## Still requires BCPS approval or external integration
 - BCPS approval of the project, privacy review (student data, COPPA/FERPA-style requirements) and security review before any real student onboarding.
 - A district-approved identity provider (SSO/SAML/OIDC) replacing demo sign-in, mapped to roles by the district.
-- Hosting, HTTPS certificates, backups, data-retention policy and incident process; a PostgreSQL deployment if required.
+- Hosting the server (Chromebooks only run the browser client), a school-network/web-filter allowance for the server address and WebSocket (`wss://`) connections, HTTPS certificates, backups, data-retention policy and incident process; a PostgreSQL deployment if required.
 - A staffed moderation process and escalation path for threats/self-harm reports.
 - Accessibility review and an independent penetration test.
