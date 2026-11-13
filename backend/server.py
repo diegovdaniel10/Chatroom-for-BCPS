@@ -181,13 +181,26 @@ class App:
 
     def membership(self, server_id: str, user_id: str) -> dict | None:
         m = self.db.one("SELECT * FROM memberships WHERE server_id=? AND user_id=?", (server_id, user_id))
-        if m and m["temp_role_until"] > 0 and m["temp_role_until"] <= time.time():
+        if not m:
+            return None
+        changed = False
+        # Expire old-style temp role (backward compat from previous wheel implementation)
+        if m["temp_role_until"] > 0 and m["temp_role_until"] <= time.time():
             original = m["original_role"] or m["role"]
             self.db.x("UPDATE memberships SET role=?, original_role=NULL, temp_role_until=0 "
                        "WHERE server_id=? AND user_id=?", (original, server_id, user_id))
             m["role"] = original
             m["original_role"] = None
             m["temp_role_until"] = 0
+            changed = True
+        # Expire wheel role if it has a finite duration that has passed
+        if m["wheel_role"] and m["wheel_role_until"] > 0 and m["wheel_role_until"] <= time.time():
+            self.db.x("UPDATE memberships SET wheel_role=NULL, wheel_role_until=0 "
+                       "WHERE server_id=? AND user_id=?", (server_id, user_id))
+            m["wheel_role"] = None
+            m["wheel_role_until"] = 0
+            changed = True
+        if changed:
             self.hub.broadcast({"type": "member.update", "serverId": server_id, "userId": user_id}, server_id)
         return m
 
@@ -211,7 +224,7 @@ class App:
 
     # --- message serialization
     MSG_SQL = ("SELECT m.seq, m.id, m.channel_id, m.user_id, m.text, m.created_at, m.edited_at, "
-               "u.name AS author_name, COALESCE(ms.role,'online') AS author_role "
+               "u.name AS author_name, COALESCE(ms.role,'online') AS author_role, ms.wheel_role AS author_wheel_role "
                "FROM messages m JOIN users u ON u.id=m.user_id JOIN channels c ON c.id=m.channel_id "
                "LEFT JOIN memberships ms ON ms.server_id=c.server_id AND ms.user_id=m.user_id ")
 
@@ -223,7 +236,8 @@ class App:
                                tuple(r["id"] for r in rows)):
                 reacts.setdefault(r["message_id"], {}).setdefault(r["emoji"], []).append(r["user_id"])
         return [{"id": r["id"], "seq": r["seq"], "channelId": r["channel_id"],
-                 "user": {"id": r["user_id"], "name": r["author_name"], "role": r["author_role"]},
+                 "user": {"id": r["user_id"], "name": r["author_name"], "role": r["author_role"],
+                          "wheelRole": r["author_wheel_role"]},
                  "text": r["text"], "createdAt": r["created_at"], "editedAt": r["edited_at"],
                  "reactions": [{"emoji": e, "userIds": ids} for e, ids in reacts.get(r["id"], {}).items()]}
                 for r in rows]
@@ -298,13 +312,19 @@ def h_health(req):
 
 def h_meta(req):
     roles = [{"key": r, "level": P.level(r), **P.ROLE_INFO[r]} for r in P.ROLES]
+    # Include wheel-only cosmetic roles (level 0) so the client can look up their display info
+    roles += [{"key": k, "level": 0, **P.ROLE_INFO[k]} for k in P.WHEEL_ONLY_KEYS]
     return 200, {"roles": roles, "reactions": REACTIONS, "reportReasons": sorted(REPORT_REASONS),
-                 "wheelRoles": P.WHEEL_ROLES}, None
+                 "wheelOutcomes": P.WHEEL_OUTCOMES}, None
 
 
 def session_payload(app: App, user: dict) -> dict:
+    memberships = {}
+    for m in app.db.q("SELECT server_id, role, wheel_role FROM memberships WHERE user_id=?", (user["id"],)):
+        memberships[m["server_id"]] = {"role": m["role"], "wheelRole": m["wheel_role"]}
     return {"authenticated": True, "demoMode": app.demo_mode,
-            "student": {"id": user["id"], "name": user["name"], "bio": user["bio"]}}
+            "student": {"id": user["id"], "name": user["name"], "bio": user["bio"]},
+            "memberships": memberships}
 
 
 def h_session(req):
@@ -368,19 +388,30 @@ def h_update_me(req):
 def h_servers(req):
     app, uid = req.app, req.user["id"]
     servers = []
-    for s in app.db.q("SELECT s.*, ms.role, ms.timeout_until, ms.original_role, ms.temp_role_until "
+    for s in app.db.q("SELECT s.*, ms.role, ms.timeout_until, ms.original_role, ms.temp_role_until, "
+                      "ms.wheel_role, ms.wheel_role_until "
                       "FROM memberships ms JOIN servers s ON s.id=ms.server_id "
                       "WHERE ms.user_id=? ORDER BY s.created_at, s.name", (uid,)):
         s_role = s["role"]
+        changed = False
         if s["temp_role_until"] > 0 and s["temp_role_until"] <= time.time():
             s_role = s["original_role"] or s["role"]
             app.db.x("UPDATE memberships SET role=?, original_role=NULL, temp_role_until=0 "
                      "WHERE server_id=? AND user_id=?", (s_role, s["id"], uid))
+            changed = True
+        wheel_role = s["wheel_role"]
+        if wheel_role and s["wheel_role_until"] > 0 and s["wheel_role_until"] <= time.time():
+            app.db.x("UPDATE memberships SET wheel_role=NULL, wheel_role_until=0 "
+                     "WHERE server_id=? AND user_id=?", (s["id"], uid))
+            wheel_role = None
+            changed = True
+        if changed:
             app.hub.broadcast({"type": "member.update", "serverId": s["id"], "userId": uid}, s["id"])
         lvl = P.level(s_role)
         chans = app.db.q("SELECT * FROM channels WHERE server_id=? AND min_read<=? ORDER BY position, name", (s["id"], lvl))
         servers.append({"id": s["id"], "name": s["name"], "description": s["description"], "color": s["color"],
                         "role": s_role, "perms": sorted(P.PERMS[s_role]),
+                        "wheelRole": wheel_role,
                         "timedOut": s["timeout_until"] > time.time(),
                         "channels": [channel_out(c, s_role) for c in chans]})
     discover = [{"id": s["id"], "name": s["name"], "description": s["description"], "color": s["color"],
@@ -426,17 +457,27 @@ def h_members(req):
     m = need_member(req, sid)
     need_perm(m, "read")
     rows = req.app.db.q("SELECT u.id,u.name,u.bio,ms.role,ms.joined_at,ms.timeout_until,"
-                        "ms.original_role,ms.temp_role_until FROM memberships ms "
-                        "JOIN users u ON u.id=ms.user_id WHERE ms.server_id=?", (sid,))
+                        "ms.original_role,ms.temp_role_until,ms.wheel_role,ms.wheel_role_until "
+                        "FROM memberships ms JOIN users u ON u.id=ms.user_id WHERE ms.server_id=?", (sid,))
     out = []
     for r in rows:
         r_role = r["role"]
+        changed = False
         if r["temp_role_until"] > 0 and r["temp_role_until"] <= time.time():
             r_role = r["original_role"] or r["role"]
             req.app.db.x("UPDATE memberships SET role=?, original_role=NULL, temp_role_until=0 "
                          "WHERE server_id=? AND user_id=?", (r_role, sid, r["id"]))
+            changed = True
+        wheel_role = r["wheel_role"]
+        if wheel_role and r["wheel_role_until"] > 0 and r["wheel_role_until"] <= time.time():
+            req.app.db.x("UPDATE memberships SET wheel_role=NULL, wheel_role_until=0 "
+                         "WHERE server_id=? AND user_id=?", (sid, r["id"]))
+            wheel_role = None
+            changed = True
+        if changed:
             req.app.hub.broadcast({"type": "member.update", "serverId": sid, "userId": r["id"]}, sid)
         out.append({"id": r["id"], "name": r["name"], "bio": r["bio"], "role": r_role, "joinedAt": r["joined_at"],
+                    "wheelRole": wheel_role,
                     "timedOut": r["timeout_until"] > time.time(), "online": req.app.hub.online(r["id"])})
     out.sort(key=lambda r: (-P.level(r["role"]), not r["online"], r["name"].lower()))
     return 200, {"members": out}, None
@@ -463,17 +504,14 @@ def h_set_role(req):
 def h_spin_wheel(req):
     (sid,) = req.args
     m = need_member(req, sid)
-    if m["temp_role_until"] > time.time():
-        remaining = int(m["temp_role_until"] - time.time())
-        raise ApiError(429, f"You already have a temporary role. Try again in {remaining // 60 + 1} minute(s).")
-    new_role = secrets.choice(P.WHEEL_ROLES)
-    until = int(time.time()) + P.WHEEL_DURATION
-    req.app.db.x("UPDATE memberships SET original_role=?, role=?, temp_role_until=? "
-                 "WHERE server_id=? AND user_id=?", (m["role"], new_role, until, sid, req.user["id"]))
-    req.app.audit(sid, req.user["id"], "wheel_spin", req.user["id"], f"{m['role']} -> {new_role} (1h)")
+    not_timed_out(m)
+    outcome = secrets.choice(P.WHEEL_OUTCOMES)
+    until = int(time.time()) + outcome["duration"] if outcome["duration"] > 0 else 0
+    req.app.db.x("UPDATE memberships SET wheel_role=?, wheel_role_until=? "
+                 "WHERE server_id=? AND user_id=?", (outcome["key"], until, sid, req.user["id"]))
+    req.app.audit(sid, req.user["id"], "wheel_spin", req.user["id"], f"wheel: {outcome['label']}")
     req.app.hub.broadcast({"type": "member.update", "serverId": sid, "userId": req.user["id"]}, sid)
-    return 200, {"role": new_role, "label": P.ROLE_INFO[new_role]["label"], "until": until,
-                 "originalRole": m["role"]}, None
+    return 200, {"key": outcome["key"], "label": outcome["label"], "until": until}, None
 
 
 def h_timeout(req):

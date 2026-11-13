@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS memberships(
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   role TEXT NOT NULL DEFAULT 'online', timeout_until INTEGER NOT NULL DEFAULT 0,
   original_role TEXT, temp_role_until INTEGER NOT NULL DEFAULT 0,
+  wheel_role TEXT, wheel_role_until INTEGER NOT NULL DEFAULT 0,
   joined_at INTEGER NOT NULL, PRIMARY KEY(server_id, user_id));
 CREATE TABLE IF NOT EXISTS channels(
   id TEXT PRIMARY KEY, server_id TEXT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
@@ -56,6 +57,15 @@ CREATE TABLE IF NOT EXISTS audit_log(
 # New: offline(1) online(2) normie(3) ... low_moderator(11) moderator(12) ... admin(14) ...
 _LEVEL_MAP_READ = {1: 1, 2: 3, 3: 11, 4: 12, 5: 14, 6: 16, 7: 15, 8: 17, 9: 18}
 _LEVEL_MAP_POST = {1: 2, 2: 3, 3: 11, 4: 12, 5: 14, 6: 16, 7: 15, 8: 17, 9: 18}
+
+
+def _migrate_wheel(conn: sqlite3.Connection) -> None:
+    """Add wheel_role / wheel_role_until columns to existing databases."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(memberships)").fetchall()}
+    if "wheel_role" in cols:
+        return
+    conn.execute("ALTER TABLE memberships ADD COLUMN wheel_role TEXT")
+    conn.execute("ALTER TABLE memberships ADD COLUMN wheel_role_until INTEGER NOT NULL DEFAULT 0")
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -104,6 +114,7 @@ class Database:
             self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
         _migrate(self.conn)
+        _migrate_wheel(self.conn)
 
     def q(self, sql: str, params: tuple = ()) -> list[dict]:
         with self.lock:

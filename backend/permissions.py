@@ -44,7 +44,15 @@ ROLE_INFO = {
     "developer":       {"label": "Developer",       "badge": "DEV", "color": "#b57bff"},
     "co_owner":        {"label": "Co-Owner",        "badge": "CO",  "color": "#f5a623"},
     "owner":           {"label": "Owner",           "badge": "OWN", "color": "#e8b923"},
+    # Wheel-only cosmetic roles (not in the hierarchy, no permissions)
+    "vip_1day":        {"label": "VIP (1 Day)",       "badge": "VIP", "color": "#ffd43b"},
+    "mvps_1day":       {"label": "MVPS (1 Day)",      "badge": "MVP", "color": "#ff6b9d"},
+    "vip_forever":     {"label": "VIP Forever",       "badge": "VIP", "color": "#ffd43b"},
+    "mvps_forever":    {"label": "MVPS Forever",      "badge": "MVP", "color": "#ff6b9d"},
 }
+
+# Role keys that exist only as wheel awards (not in the ROLES hierarchy).
+WHEEL_ONLY_KEYS = ["vip_1day", "mvps_1day", "vip_forever", "mvps_forever"]
 
 # --- Permission sets (explicit per role, NOT derived from level) ---
 _READ_ONLY = frozenset({"read"})
@@ -77,11 +85,21 @@ PERMS: dict[str, frozenset[str]] = {
     "owner": frozenset(_CO),
 }
 
-# Roles obtainable from the spinning wheel (never includes moderation/admin roles).
-WHEEL_ROLES = ["rookie", "star", "champion", "lucky", "legend", "vip", "mvps"]
-
-# Duration of a wheel-awarded temporary role in seconds (1 hour).
-WHEEL_DURATION = 3600
+# Outcomes obtainable from the spinning wheel (never includes moderation/admin roles).
+# duration=0 means forever; duration>0 means the role expires after that many seconds.
+# The wheel role is stored separately from the member's primary role and shown as a
+# cosmetic badge alongside it.
+WHEEL_OUTCOMES = [
+    {"key": "rookie",      "label": "Rookie",       "badge": "RKE", "color": "#7dd3fc", "duration": 0},
+    {"key": "star",        "label": "Star",         "badge": "STR", "color": "#fbbf24", "duration": 0},
+    {"key": "champion",    "label": "Champion",     "badge": "CHP", "color": "#f97316", "duration": 0},
+    {"key": "lucky",       "label": "Lucky",        "badge": "LKY", "color": "#a78bfa", "duration": 0},
+    {"key": "legend",      "label": "Legend",       "badge": "LGD", "color": "#f43f5e", "duration": 0},
+    {"key": "vip_1day",    "label": "VIP (1 Day)",  "badge": "VIP", "color": "#ffd43b", "duration": 86400},
+    {"key": "mvps_1day",   "label": "MVPS (1 Day)", "badge": "MVP", "color": "#ff6b9d", "duration": 86400},
+    {"key": "vip_forever", "label": "VIP Forever",  "badge": "VIP", "color": "#ffd43b", "duration": 0},
+    {"key": "mvps_forever","label": "MVPS Forever", "badge": "MVP", "color": "#ff6b9d", "duration": 0},
+]
 
 # Messages allowed per 10 seconds.
 MESSAGE_RATE = {

@@ -59,6 +59,7 @@ const fmtTime = (ms) => {
   return d.toDateString() === now.toDateString() ? `Today at ${t}` : `${d.toLocaleDateString()} ${t}`;
 };
 const roleBadge = (key) => h("span", { class: "badge", css: { "--role": role(key).color }, title: role(key).label, text: role(key).badge });
+const wheelBadge = (wheelRole) => wheelRole ? h("span", { class: "badge wheel-badge", css: { "--role": role(wheelRole).color }, title: role(wheelRole).label, text: role(wheelRole).badge }) : null;
 const avatar = (name, key) => h("div", { class: "avatar", css: { "--role": role(key).color }, text: initial(name) });
 
 // ---------------------------------------------------------------- modal
@@ -143,10 +144,12 @@ function renderSidebar() {
     }, h("span", { text: "#" }), h("span", { text: c.name }),
       state.unread.has(c.id) ? h("span", { class: "dot" }) : (!c.canPost ? h("span", { class: "lock", title: "Read only for your role", text: "🔒" }) : null))) : []),
   );
-  const r = s ? s.role : "student";
+  const r = s ? s.role : "online";
+  const wr = s ? s.wheelRole : null;
   $("#me-name").textContent = state.me.name;
-  $("#me-role").textContent = role(r).label + (s && s.timedOut ? " · timed out" : "");
+  $("#me-role").textContent = role(r).label + (wr ? " + " + role(wr).label : "") + (s && s.timedOut ? " · timed out" : "");
   const av = $("#me-avatar"); av.textContent = initial(state.me.name); av.style.setProperty("--role", role(r).color);
+  $("#btn-moderation").classList.toggle("hidden", !can("view_reports"));
 }
 
 function renderTop() {
@@ -203,6 +206,7 @@ function messageEl(m) {
       h("div", { class: "msg-head", css: { "--role": role(m.user.role).color } },
         h("button", { class: "uname", text: m.user.name, onclick: () => openProfile(m.user.id) }),
         roleBadge(m.user.role),
+        wheelBadge(m.user.wheelRole),
         h("span", { class: "time", text: fmtTime(m.createdAt) }),
         m.editedAt ? h("span", { class: "edited", text: "(edited)" }) : null),
       h("div", { class: "text", text: m.text }), reacts),
@@ -277,7 +281,7 @@ function renderMembers() {
     const list = groups.get(key); if (!list) continue;
     out.push(h("div", { class: "mgroup", text: `${role(key).label} — ${list.length}` }));
     for (const m of list) out.push(h("button", { class: "member" + (m.online ? "" : " off"), onclick: () => openProfile(m.id) },
-      avatar(m.name, m.role), h("span", { class: "mn", css: { "--role": role(m.role).color }, text: m.name }), roleBadge(m.role)));
+      avatar(m.name, m.role), h("span", { class: "mn", css: { "--role": role(m.role).color }, text: m.name }), roleBadge(m.role), wheelBadge(m.wheelRole)));
   }
   $("#members").replaceChildren(...out);
 }
@@ -287,7 +291,7 @@ function openProfile(userId) {
   if (!m) return toast("That member isn't in this server anymore.", true);
   const mine = cur().role, self = m.id === state.me.id;
   const body = [h("div", { class: "profile-top" }, avatar(m.name, m.role),
-    h("div", {}, h("div", { class: "row" }, h("strong", { css: { color: role(m.role).color }, text: m.name }), roleBadge(m.role)),
+    h("div", {}, h("div", { class: "row" }, h("strong", { css: { color: role(m.role).color }, text: m.name }), roleBadge(m.role), wheelBadge(m.wheelRole)),
       h("div", { class: "muted", text: (m.online ? "Online" : "Offline") + (m.timedOut ? " · timed out" : "") }))),
     h("div", { class: "card" }, h("div", { class: "muted", text: "About" }), h("div", { text: m.bio || "No bio yet." })),
     h("div", { class: "muted", text: `Joined ${new Date(m.joinedAt).toLocaleDateString()}` })];
@@ -351,10 +355,19 @@ function openModeration(tab) {
       body.replaceChildren(...(d.reports.length ? d.reports.map((r) => h("div", { class: "card" },
         h("div", { class: "row" }, h("strong", { text: r.author.name }), h("span", { class: "muted", text: `#${r.channel} · ${r.reason} · ${fmtTime(r.createdAt)}` })),
         h("div", { class: "text", text: r.text || "(message removed)" }),
-        d.canResolve ? h("div", { class: "row" },
-          h("button", { class: "ghost", text: "Dismiss", onclick: guard(async () => { await api("POST", `/api/reports/${r.id}/resolve`, { action: "dismissed" }); openModeration("reports"); }) }),
-          h("button", { class: "danger", text: "Mark actioned", onclick: guard(async () => { await api("POST", `/api/reports/${r.id}/resolve`, { action: "actioned" }); openModeration("reports"); }) }),
-          !r.deleted && can("delete_messages") ? h("button", { class: "ghost", text: "Delete message", onclick: guard(async () => { await api("DELETE", `/api/messages/${r.messageId}`); toast("Message deleted."); openModeration("reports"); }) }) : null)
+        d.canResolve ? h("div", {},
+          h("div", { class: "row" },
+            h("button", { class: "ghost", text: "Dismiss", onclick: guard(async () => { await api("POST", `/api/reports/${r.id}/resolve`, { action: "dismissed" }); openModeration("reports"); }) }),
+            h("button", { class: "danger", text: "Mark actioned", onclick: guard(async () => { await api("POST", `/api/reports/${r.id}/resolve`, { action: "actioned" }); openModeration("reports"); }) }),
+            !r.deleted && can("delete_messages") ? h("button", { class: "ghost", text: "Delete message", onclick: guard(async () => { await api("DELETE", `/api/messages/${r.messageId}`); toast("Message deleted."); openModeration("reports"); }) }) : null),
+          can("timeout_members") ? h("div", { class: "row mod-timeout" },
+            h("span", { class: "muted", text: "Timeout author:" }),
+            h("select", { id: `to-${r.id}` }, [["10 min", 10], ["1 hour", 60], ["1 day", 1440], ["1 week", 10080]].map(([t, v]) => h("option", { value: v, text: t }))),
+            h("button", { class: "danger", text: "Apply", onclick: guard(async () => {
+              const sel = document.getElementById(`to-${r.id}`);
+              await api("POST", `/api/servers/${sid}/members/${r.author.id}/timeout`, { minutes: Number(sel.value) });
+              toast("Author timed out."); openModeration("reports");
+            }) })) : null)
           : h("div", { class: "muted", text: "Moderators resolve reports." }))) : [h("div", { class: "muted", text: "No open reports." })]));
     } else if (tab === "audit") {
       const d = await api("GET", `/api/servers/${sid}/audit`);
@@ -423,11 +436,11 @@ function openDiscover() {
 
 // ---------------------------------------------------------------- role wheel
 function openWheel() {
-  const wheelRoles = state.meta.wheelRoles || [];
-  if (!wheelRoles.length || !state.serverId) return;
-  const n = wheelRoles.length;
+  const outcomes = state.meta.wheelOutcomes || [];
+  if (!outcomes.length || !state.serverId) return;
+  const n = outcomes.length;
   const angle = 360 / n;
-  const colors = wheelRoles.map((k) => role(k).color);
+  const colors = outcomes.map((o) => o.color);
   const gradient = colors.map((c, i) => `${c} ${i * angle}deg ${(i + 1) * angle}deg`).join(", ");
   const wheel = h("div", { class: "wheel", css: { background: `conic-gradient(${gradient})` } });
   for (let i = 0; i < n; i++) {
@@ -435,11 +448,11 @@ function openWheel() {
     const rad = (la - 90) * Math.PI / 180;
     wheel.append(h("div", { class: "wheel-label", css: {
       transform: `translate(-50%, -50%) translate(${72 * Math.cos(rad)}px, ${72 * Math.sin(rad)}px)`,
-    }, text: role(wheelRoles[i]).badge }));
+    }, text: outcomes[i].badge }));
   }
   let spinning = false;
   openModal("Spin the Wheel",
-    h("p", { class: "muted", text: "Spin to get a random temporary role! It lasts 1 hour, then your previous role returns." }),
+    h("p", { class: "muted", text: "Spin to get a random role badge! Some last a day, some are forever — your main role stays too." }),
     h("div", { class: "wheel-wrap" },
       h("div", { class: "wheel-pointer", text: "▼" }),
       wheel,
@@ -449,13 +462,13 @@ function openWheel() {
       spinning = true;
       try {
         const data = await api("POST", `/api/servers/${state.serverId}/wheel`);
-        const winIdx = wheelRoles.indexOf(data.role);
+        const winIdx = outcomes.findIndex((o) => o.key === data.key);
         const target = 360 * 6 - winIdx * angle - angle / 2;
         wheel.style.transition = "transform 3s cubic-bezier(0.17,0.67,0.12,0.99)";
         wheel.style.transform = `rotate(${target}deg)`;
         setTimeout(async () => {
           closeModal();
-          toast(`You got ${data.label}! Enjoy it for 1 hour.`);
+          toast(`You got ${data.label}${data.until > 0 ? " (1 day)" : " (forever)"}!`);
           await loadServers(false);
         }, 3500);
       } catch (e) {
@@ -465,6 +478,7 @@ function openWheel() {
     }) })));
 }
 $("#btn-wheel").addEventListener("click", guard(openWheel));
+$("#btn-moderation").addEventListener("click", guard(() => openModeration("reports")));
 
 // ---------------------------------------------------------------- real-time
 function setConn(ok) {

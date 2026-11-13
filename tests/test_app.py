@@ -124,34 +124,42 @@ class Base(unittest.TestCase):
         cls.server.server_close()
         cls.tmp.cleanup()
 
-    def user(self, role="student"):
+    def user(self, role="online"):
         Base.n += 1
         c = Client(self.port).login(f"Tester {Base.n}")
-        if role != "student":
+        if role != "online":
             self.app.db.x("UPDATE memberships SET role=? WHERE server_id=? AND user_id=?", (role, self.sid, c.user["id"]))
         return c
 
-    def say(self, client, text="hello", channel="general"):
+    def say(self, client, text="hello", channel="global-chat"):
         return client.req("POST", f"/api/channels/{self.ch[channel]}/messages", {"text": text})
 
 
 class RoleTests(unittest.TestCase):
-    def test_nine_roles_in_exact_order(self):
-        self.assertEqual(P.ROLES, ["student", "normie", "helper", "moderator", "admin", "developer",
-                                   "super_admin", "co_owner", "owner"])
-        self.assertEqual([P.level(r) for r in P.ROLES], list(range(1, 10)))
+    def test_roles_in_exact_order(self):
+        self.assertEqual(P.ROLES, [
+            "offline", "online", "normie", "rookie", "star", "champion", "lucky", "legend",
+            "vip", "mvps", "low_moderator", "moderator", "low_admin", "admin",
+            "super_admin", "developer", "co_owner", "owner"])
+        self.assertEqual([P.level(r) for r in P.ROLES], list(range(1, 19)))
 
     def test_distinct_colors_and_badges(self):
-        self.assertEqual(len({v["color"] for v in P.ROLE_INFO.values()}), 9)
-        self.assertEqual(len({v["badge"] for v in P.ROLE_INFO.values()}), 9)
+        hierarchy_info = {k: P.ROLE_INFO[k] for k in P.ROLES}
+        self.assertEqual(len({v["color"] for v in hierarchy_info.values()}), 18)
+        self.assertEqual(len({v["badge"] for v in hierarchy_info.values()}), 18)
 
     def test_permission_matrix(self):
+        # offline is read-only
+        self.assertEqual(P.PERMS["offline"], frozenset({"read"}))
+        # all roles above offline have base permissions
         for r in P.ROLES:
-            self.assertTrue({"read", "send", "react", "report"} <= P.PERMS[r])
-        self.assertFalse(P.has_perm("student", "delete_messages"))
-        self.assertFalse(P.has_perm("helper", "delete_messages"))
-        self.assertTrue(P.has_perm("helper", "view_reports"))
-        self.assertFalse(P.has_perm("helper", "resolve_reports"))
+            if r == "offline":
+                continue
+            self.assertTrue({"read", "send", "react", "report"} <= P.PERMS[r], r)
+        self.assertFalse(P.has_perm("online", "delete_messages"))
+        self.assertFalse(P.has_perm("low_moderator", "delete_messages"))
+        self.assertTrue(P.has_perm("low_moderator", "view_reports"))
+        self.assertFalse(P.has_perm("low_moderator", "resolve_reports"))
         for p in ("delete_messages", "timeout_members", "resolve_reports"):
             self.assertTrue(P.has_perm("moderator", p))
         self.assertFalse(P.has_perm("moderator", "manage_channels"))
@@ -167,19 +175,37 @@ class RoleTests(unittest.TestCase):
         self.assertTrue(P.has_perm("co_owner", "manage_invites"))
         self.assertTrue(P.has_perm("owner", "manage_invites"))
 
+    def test_wheel_outcomes(self):
+        keys = [o["key"] for o in P.WHEEL_OUTCOMES]
+        # Never includes moderation/admin roles
+        forbidden = {"low_moderator", "moderator", "low_admin", "admin", "super_admin",
+                     "developer", "co_owner", "owner"}
+        self.assertFalse(forbidden & set(keys))
+        # Includes the four VIP/MVPS prizes
+        self.assertIn("vip_1day", keys)
+        self.assertIn("mvps_1day", keys)
+        self.assertIn("vip_forever", keys)
+        self.assertIn("mvps_forever", keys)
+        # 1-day prizes have 86400 duration; forever prizes have 0
+        for o in P.WHEEL_OUTCOMES:
+            if "1day" in o["key"]:
+                self.assertEqual(o["duration"], 86400)
+            elif "forever" in o["key"]:
+                self.assertEqual(o["duration"], 0)
+
     def test_assignment_rules(self):
-        self.assertFalse(P.can_assign("owner", "student", "owner", False))      # nobody can be made Owner
+        self.assertFalse(P.can_assign("owner", "online", "owner", False))      # nobody can be made Owner
         self.assertFalse(P.can_assign("owner", "owner", "admin", False))        # Owner can't be demoted
-        self.assertFalse(P.can_assign("owner", "student", "admin", True))       # never yourself
-        self.assertTrue(P.can_assign("owner", "student", "co_owner", False))
-        self.assertFalse(P.can_assign("co_owner", "student", "co_owner", False))
-        self.assertTrue(P.can_assign("co_owner", "student", "super_admin", False))
-        self.assertFalse(P.can_assign("super_admin", "student", "super_admin", False))
-        self.assertTrue(P.can_assign("super_admin", "admin", "developer", False))
-        self.assertFalse(P.can_assign("admin", "student", "admin", False))
-        self.assertTrue(P.can_assign("admin", "student", "moderator", False))
-        self.assertFalse(P.can_assign("developer", "student", "normie", False))  # no manage_roles
-        self.assertFalse(P.can_assign("moderator", "student", "helper", False))
+        self.assertFalse(P.can_assign("owner", "online", "admin", True))       # never yourself
+        self.assertTrue(P.can_assign("owner", "online", "co_owner", False))
+        self.assertFalse(P.can_assign("co_owner", "online", "co_owner", False))
+        self.assertTrue(P.can_assign("co_owner", "online", "super_admin", False))
+        self.assertFalse(P.can_assign("super_admin", "online", "super_admin", False))
+        self.assertTrue(P.can_assign("super_admin", "admin", "low_admin", False))
+        self.assertFalse(P.can_assign("admin", "online", "admin", False))
+        self.assertTrue(P.can_assign("admin", "online", "moderator", False))
+        self.assertFalse(P.can_assign("developer", "online", "normie", False))  # no manage_roles
+        self.assertFalse(P.can_assign("moderator", "online", "low_moderator", False))
 
 
 class SecurityTests(unittest.TestCase):
@@ -199,10 +225,12 @@ class SecurityTests(unittest.TestCase):
             self.assertIsNone(validate_message(bad), bad)
 
     def test_production_guards(self):
-        with self.assertRaises(RuntimeError):
-            S.App(":memory:", "x" * 48, demo_mode=True, production=True)
+        # Short secret in production raises RuntimeError
         with self.assertRaises(RuntimeError):
             S.App(":memory:", "short", demo_mode=False, production=True)
+        # Valid secret in production with demo mode is allowed (warning only)
+        app = S.App(":memory:", "x" * 48, demo_mode=True, production=True)
+        self.assertTrue(app.production)
 
 
 class ApiTests(Base):
@@ -259,12 +287,12 @@ class ApiTests(Base):
             srv.shutdown()
             srv.server_close()
 
-    def test_new_users_are_students_only_in_open_servers(self):
+    def test_new_users_are_online_only_in_open_servers(self):
         u = self.user()
         _, data, _ = u.req("GET", "/api/servers")
         names = {s["name"]: s for s in data["servers"]}
         self.assertEqual(set(names), {"BCPS Hub", "Clubs Corner"})
-        self.assertTrue(all(s["role"] == "student" for s in names.values()))
+        self.assertTrue(all(s["role"] == "online" for s in names.values()))
         self.assertEqual([d["name"] for d in data["discover"]], ["Staff Room"])
         self.assertNotIn("staff-lounge", [c["name"] for c in names["BCPS Hub"]["channels"]])
 
@@ -273,7 +301,7 @@ class ApiTests(Base):
         for role in ("admin", "owner", "moderator", "normie"):
             s, d, _ = u.req("POST", f"/api/servers/{self.sid}/members/{u.user['id']}/role", {"role": role})
             self.assertEqual(s, 403, (role, d))
-        self.assertEqual(self.app.membership(self.sid, u.user["id"])["role"], "student")
+        self.assertEqual(self.app.membership(self.sid, u.user["id"])["role"], "online")
         admin = self.user("admin")
         self.assertEqual(admin.req("POST", f"/api/servers/{self.sid}/members/{admin.user['id']}/role", {"role": "owner"})[0], 403)
         self.assertEqual(self.app.membership(self.sid, admin.user["id"])["role"], "admin")
@@ -281,8 +309,8 @@ class ApiTests(Base):
     def test_role_assignment_enforced(self):
         target = self.user()
         path = f"/api/servers/{self.sid}/members/{target.user['id']}/role"
-        student, mod, dev = self.user(), self.user("moderator"), self.user("developer")
-        self.assertEqual(student.req("POST", path, {"role": "normie"})[0], 403)
+        online_user, mod, dev = self.user(), self.user("moderator"), self.user("developer")
+        self.assertEqual(online_user.req("POST", path, {"role": "normie"})[0], 403)
         self.assertEqual(mod.req("POST", path, {"role": "normie"})[0], 403)
         self.assertEqual(dev.req("POST", path, {"role": "normie"})[0], 403)
         admin = self.user("admin")
@@ -291,8 +319,8 @@ class ApiTests(Base):
         self.assertEqual(admin.req("POST", path, {"role": "bogus"})[0], 400)
         self.assertEqual(admin.req("POST", path, {"role": "moderator"})[0], 200)
         # admin can't touch someone at/above their level
-        self.assertEqual(admin.req("POST", f"/api/servers/{self.sid}/members/{dev.user['id']}/role", {"role": "student"})[0], 403)
-        self.assertEqual(admin.req("POST", f"/api/servers/{self.sid}/members/{self.owner.user['id']}/role", {"role": "student"})[0], 403)
+        self.assertEqual(admin.req("POST", f"/api/servers/{self.sid}/members/{dev.user['id']}/role", {"role": "online"})[0], 403)
+        self.assertEqual(admin.req("POST", f"/api/servers/{self.sid}/members/{self.owner.user['id']}/role", {"role": "online"})[0], 403)
         # only Owner can grant Co-Owner; co-owner and super admin cannot
         sa, co = self.user("super_admin"), self.user("co_owner")
         self.assertEqual(sa.req("POST", path, {"role": "co_owner"})[0], 403)
@@ -301,7 +329,7 @@ class ApiTests(Base):
         self.assertEqual(self.owner.req("POST", path, {"role": "co_owner"})[0], 200)
         self.assertEqual(self.owner.req("POST", path, {"role": "owner"})[0], 403)
 
-    def test_all_nine_roles_assignable_by_owner(self):
+    def test_all_roles_assignable_by_owner(self):
         t = self.user()
         for role in P.ROLES[:-1]:
             s, _, _ = self.owner.req("POST", f"/api/servers/{self.sid}/members/{t.user['id']}/role", {"role": role})
@@ -314,13 +342,13 @@ class ApiTests(Base):
             self.assertEqual(set(hub["perms"]), set(P.PERMS[role]))
 
     def test_restricted_channels(self):
-        student, helper, mod = self.user(), self.user("helper"), self.user("moderator")
-        self.assertEqual(student.req("GET", f"/api/channels/{self.ch['staff-lounge']}/messages")[0], 404)
-        self.assertEqual(self.say(student, "sneaky", "staff-lounge")[0], 404)
-        self.assertEqual(helper.req("GET", f"/api/channels/{self.ch['staff-lounge']}/messages")[0], 200)
-        self.assertEqual(self.say(helper, "hi staff", "staff-lounge")[0], 201)
-        self.assertEqual(self.say(student, "hi", "announcements")[0], 403)   # read-only for students
-        self.assertEqual(self.say(helper, "hi", "announcements")[0], 403)
+        online_user, low_mod, mod = self.user(), self.user("low_moderator"), self.user("moderator")
+        self.assertEqual(online_user.req("GET", f"/api/channels/{self.ch['staff-lounge']}/messages")[0], 404)
+        self.assertEqual(self.say(online_user, "sneaky", "staff-lounge")[0], 404)
+        self.assertEqual(low_mod.req("GET", f"/api/channels/{self.ch['staff-lounge']}/messages")[0], 200)
+        self.assertEqual(self.say(low_mod, "hi staff", "staff-lounge")[0], 201)
+        self.assertEqual(self.say(online_user, "hi", "announcements")[0], 403)   # read-only for online
+        self.assertEqual(self.say(low_mod, "hi", "announcements")[0], 403)
         self.assertEqual(self.say(mod, "News!", "announcements")[0], 201)
         # non-member of a server can't read or post
         outsider = self.user()
@@ -351,7 +379,7 @@ class ApiTests(Base):
         self.assertEqual(b.req("DELETE", f"/api/messages/{mid}")[0], 403)
         self.assertEqual(mod.req("DELETE", f"/api/messages/{mid}")[0], 204)
         self.assertEqual(a.req("DELETE", f"/api/messages/{mid}")[0], 404)
-        _, hist, _ = a.req("GET", f"/api/channels/{self.ch['general']}/messages")
+        _, hist, _ = a.req("GET", f"/api/channels/{self.ch['global-chat']}/messages")
         self.assertNotIn(mid, [m["id"] for m in hist["messages"]])
         # moderators can't delete messages from equal/higher roles; authors can delete their own
         m2 = self.user("moderator")
@@ -363,11 +391,11 @@ class ApiTests(Base):
         u = self.user()
         for bad in ("", "x" * 501, "bad\x00", 12):
             self.assertEqual(self.say(u, bad)[0], 400)
-        big = u.req("POST", f"/api/channels/{self.ch['general']}/messages", {"text": "x" * 9000})
+        big = u.req("POST", f"/api/channels/{self.ch['global-chat']}/messages", {"text": "x" * 9000})
         self.assertEqual(big[0], 413)
 
     def test_reactions_and_reports(self):
-        a, b, helper, mod = self.user(), self.user(), self.user("helper"), self.user("moderator")
+        a, b, low_mod, mod = self.user(), self.user(), self.user("low_moderator"), self.user("moderator")
         mid = self.say(a, "report me")[1]["message"]["id"]
         s, d, _ = b.req("POST", f"/api/messages/{mid}/reactions", {"emoji": "👍"})
         self.assertEqual((s, d["reactions"][0]["emoji"]), (200, "👍"))
@@ -379,11 +407,11 @@ class ApiTests(Base):
         self.assertEqual(b.req("POST", f"/api/messages/{mid}/report", {"reason": "bullying"})[0], 202)
         self.assertEqual(b.req("POST", f"/api/messages/{mid}/report", {"reason": "bullying"})[1]["duplicate"], True)
         self.assertEqual(b.req("GET", f"/api/servers/{self.sid}/reports")[0], 403)
-        _, rep, _ = helper.req("GET", f"/api/servers/{self.sid}/reports")
+        _, rep, _ = low_mod.req("GET", f"/api/servers/{self.sid}/reports")
         mine = next(r for r in rep["reports"] if r["messageId"] == mid)
-        self.assertIsNone(mine["reporterId"])  # reporter identity hidden from helpers
+        self.assertIsNone(mine["reporterId"])  # reporter identity hidden from low moderators
         rid = mine["id"]
-        self.assertEqual(helper.req("POST", f"/api/reports/{rid}/resolve", {"action": "dismissed"})[0], 403)
+        self.assertEqual(low_mod.req("POST", f"/api/reports/{rid}/resolve", {"action": "dismissed"})[0], 403)
         _, rep, _ = mod.req("GET", f"/api/servers/{self.sid}/reports")
         self.assertEqual(next(r for r in rep["reports"] if r["id"] == rid)["reporterId"], b.user["id"])
         # deleting a reported message keeps its text for review only
@@ -394,9 +422,9 @@ class ApiTests(Base):
         self.assertNotIn(rid, [r["id"] for r in mod.req("GET", f"/api/servers/{self.sid}/reports")[1]["reports"]])
 
     def test_timeouts(self):
-        target, mod, student, admin = self.user(), self.user("moderator"), self.user(), self.user("admin")
+        target, mod, online_user, admin = self.user(), self.user("moderator"), self.user(), self.user("admin")
         path = f"/api/servers/{self.sid}/members/{target.user['id']}/timeout"
-        self.assertEqual(student.req("POST", path, {"minutes": 5})[0], 403)
+        self.assertEqual(online_user.req("POST", path, {"minutes": 5})[0], 403)
         self.assertEqual(mod.req("POST", path, {"minutes": -1})[0], 400)
         self.assertEqual(mod.req("POST", path, {"minutes": 5})[0], 200)
         s, d, _ = self.say(target, "can I talk?")
@@ -418,7 +446,7 @@ class ApiTests(Base):
 
     def test_channel_management(self):
         admin, mod = self.user("admin"), self.user("moderator")
-        body = {"name": "Test Room", "topic": "t", "minRead": "student", "minPost": "student"}
+        body = {"name": "Test Room", "topic": "t", "minRead": "online", "minPost": "online"}
         self.assertEqual(mod.req("POST", f"/api/servers/{self.sid}/channels", body)[0], 403)
         s, d, _ = admin.req("POST", f"/api/servers/{self.sid}/channels", body)
         self.assertEqual(s, 201)
@@ -429,9 +457,9 @@ class ApiTests(Base):
         self.assertEqual(admin.req("DELETE", f"/api/channels/{d['id']}")[0], 204)
 
     def test_audit_and_diagnostics_access(self):
-        student, admin, sa, dev = self.user(), self.user("admin"), self.user("super_admin"), self.user("developer")
+        online_user, admin, sa, dev = self.user(), self.user("admin"), self.user("super_admin"), self.user("developer")
         p = f"/api/servers/{self.sid}"
-        self.assertEqual(student.req("GET", p + "/audit")[0], 403)
+        self.assertEqual(online_user.req("GET", p + "/audit")[0], 403)
         self.assertEqual(admin.req("GET", p + "/audit")[0], 403)
         self.assertEqual(sa.req("GET", p + "/audit")[0], 200)
         self.assertEqual(dev.req("GET", p + "/audit")[0], 403)
@@ -453,14 +481,28 @@ class ApiTests(Base):
         _, d, _ = u.req("GET", f"/api/servers/{self.sid}/members")
         self.assertEqual(next(m for m in d["members"] if m["id"] == u.user["id"])["bio"], "I like robots")
 
+    def test_wheel_spin(self):
+        u = self.user()
+        s, d, _ = u.req("POST", f"/api/servers/{self.sid}/wheel")
+        self.assertEqual(s, 200)
+        self.assertIn("key", d)
+        self.assertIn("label", d)
+        self.assertIn("until", d)
+        # The wheel role should appear on the member
+        _, members, _ = u.req("GET", f"/api/servers/{self.sid}/members")
+        me = next(m for m in members["members"] if m["id"] == u.user["id"])
+        self.assertEqual(me["wheelRole"], d["key"])
+        # The primary role should NOT change
+        self.assertEqual(me["role"], "online")
+
     def test_websocket_realtime_and_visibility(self):
-        sender, reader, student = self.user(), self.user(), self.user()
-        helper = self.user("helper")
+        sender, reader, online_user = self.user(), self.user(), self.user()
+        low_mod = self.user("low_moderator")
         for cookie, origin, expected in ((None, True, 401), (reader.cookie, False, 403)):
             bad = WSClient(self.port, cookie, origin=origin)
             self.assertEqual(bad.status, expected)
             bad.close()
-        r, st, hp = WSClient(self.port, reader.cookie), WSClient(self.port, student.cookie), WSClient(self.port, helper.cookie)
+        r, st, hp = WSClient(self.port, reader.cookie), WSClient(self.port, online_user.cookie), WSClient(self.port, low_mod.cookie)
         for w in (r, st, hp):
             self.assertEqual(w.status, 101)
         try:
@@ -470,8 +512,8 @@ class ApiTests(Base):
                 ev = r.next_event()
             self.assertEqual(ev["message"]["text"], "live message")
             self.assertEqual(ev["message"]["user"]["name"], sender.user["name"])
-            # restricted channel: helper receives, plain student must not
-            self.say(helper, "staff only secret", "staff-lounge")
+            # restricted channel: low_moderator receives, plain online user must not
+            self.say(low_mod, "staff only secret", "staff-lounge")
             seen = []
             for w in (hp, st):
                 got = []
