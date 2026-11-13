@@ -3,36 +3,73 @@
 from __future__ import annotations
 
 # Lowest -> highest. The order IS the hierarchy.
-ROLES = ["student", "normie", "helper", "moderator", "admin",
-         "developer", "super_admin", "co_owner", "owner"]
+ROLES = [
+    "offline",        # 1  - read only, cannot send
+    "online",         # 2  - basic user (default)
+    "normie",          # 3  - basic user, different badge
+    "rookie",          # 4  - wheel cosmetic
+    "star",            # 5  - wheel cosmetic
+    "champion",        # 6  - wheel cosmetic
+    "lucky",           # 7  - wheel cosmetic
+    "legend",          # 8  - wheel cosmetic
+    "vip",             # 9  - wheel
+    "mvps",            # 10 - wheel
+    "low_moderator",   # 11
+    "moderator",       # 12
+    "low_admin",       # 13
+    "admin",           # 14
+    "super_admin",     # 15
+    "developer",       # 16
+    "co_owner",        # 17
+    "owner",           # 18
+]
 ROLE_LEVEL = {role: i + 1 for i, role in enumerate(ROLES)}
 
 ROLE_INFO = {
-    "student":     {"label": "Student",     "badge": "STU", "color": "#9aa4b2"},
-    "normie":      {"label": "Normie",      "badge": "NRM", "color": "#4fcf86"},
-    "helper":      {"label": "Helper",      "badge": "HLP", "color": "#2fd0d0"},
-    "moderator":   {"label": "Moderator",   "badge": "MOD", "color": "#4d8dff"},
-    "admin":       {"label": "Admin",       "badge": "ADM", "color": "#ff8a3d"},
-    "developer":   {"label": "Developer",   "badge": "DEV", "color": "#b57bff"},
-    "super_admin": {"label": "Super Admin", "badge": "SA",  "color": "#ff4d79"},
-    "co_owner":    {"label": "Co-Owner",    "badge": "CO",  "color": "#f5a623"},
-    "owner":       {"label": "Owner",       "badge": "OWN", "color": "#ffd43b"},
+    "offline":         {"label": "Offline",        "badge": "OFF", "color": "#6b7280"},
+    "online":          {"label": "Online",         "badge": "ON",  "color": "#3ddc97"},
+    "normie":          {"label": "Normie",          "badge": "NRM", "color": "#4fcf86"},
+    "rookie":          {"label": "Rookie",          "badge": "RKE", "color": "#7dd3fc"},
+    "star":            {"label": "Star",            "badge": "STR", "color": "#fbbf24"},
+    "champion":        {"label": "Champion",        "badge": "CHP", "color": "#f97316"},
+    "lucky":           {"label": "Lucky",            "badge": "LKY", "color": "#a78bfa"},
+    "legend":          {"label": "Legend",          "badge": "LGD", "color": "#f43f5e"},
+    "vip":             {"label": "VIP",             "badge": "VIP", "color": "#ffd43b"},
+    "mvps":            {"label": "MVPS",            "badge": "MVP", "color": "#ff6b9d"},
+    "low_moderator":   {"label": "Low Moderator",   "badge": "LM",  "color": "#2fd0d0"},
+    "moderator":       {"label": "Moderator",       "badge": "MOD", "color": "#4d8dff"},
+    "low_admin":       {"label": "Low Admin",       "badge": "LA",  "color": "#7c9eff"},
+    "admin":           {"label": "Admin",           "badge": "ADM", "color": "#ff8a3d"},
+    "super_admin":     {"label": "Super Admin",     "badge": "SA",  "color": "#ff4d79"},
+    "developer":       {"label": "Developer",       "badge": "DEV", "color": "#b57bff"},
+    "co_owner":        {"label": "Co-Owner",        "badge": "CO",  "color": "#f5a623"},
+    "owner":           {"label": "Owner",           "badge": "OWN", "color": "#e8b923"},
 }
 
+# --- Permission sets (explicit per role, NOT derived from level) ---
+_READ_ONLY = frozenset({"read"})
 _BASE = frozenset({"read", "send", "react", "report"})
-_HELPER = _BASE | {"view_reports"}
-_MOD = _HELPER | {"resolve_reports", "delete_messages", "timeout_members"}
-_ADMIN = _MOD | {"manage_channels", "manage_server", "manage_roles"}
+_LOW_MOD = _BASE | {"view_reports"}
+_MOD = _LOW_MOD | {"resolve_reports", "delete_messages", "timeout_members"}
+_LOW_ADMIN = _MOD | {"manage_channels"}
+_ADMIN = _LOW_ADMIN | {"manage_server", "manage_roles"}
 _SUPER = _ADMIN | {"view_audit", "view_diagnostics"}
 _CO = _SUPER | {"manage_invites"}
 
-# Permissions are explicit per role (NOT derived from level), so e.g. Developer
-# gets diagnostics without automatically receiving moderation or owner powers.
 PERMS: dict[str, frozenset[str]] = {
-    "student": _BASE,
+    "offline": _READ_ONLY,
+    "online": _BASE,
     "normie": _BASE,
-    "helper": frozenset(_HELPER),
+    "rookie": _BASE,
+    "star": _BASE,
+    "champion": _BASE,
+    "lucky": _BASE,
+    "legend": _BASE,
+    "vip": _BASE,
+    "mvps": _BASE,
+    "low_moderator": frozenset(_LOW_MOD),
     "moderator": frozenset(_MOD),
+    "low_admin": frozenset(_LOW_ADMIN),
     "admin": frozenset(_ADMIN),
     "developer": frozenset(_BASE | {"view_diagnostics"}),
     "super_admin": frozenset(_SUPER),
@@ -40,9 +77,22 @@ PERMS: dict[str, frozenset[str]] = {
     "owner": frozenset(_CO),
 }
 
+# Roles obtainable from the spinning wheel (never includes moderation/admin roles).
+WHEEL_ROLES = ["rookie", "star", "champion", "lucky", "legend", "vip", "mvps"]
+
+# Duration of a wheel-awarded temporary role in seconds (1 hour).
+WHEEL_DURATION = 3600
+
 # Messages allowed per 10 seconds.
-MESSAGE_RATE = {"student": 6, "normie": 8, "helper": 8, "moderator": 20, "admin": 20,
-                "developer": 12, "super_admin": 20, "co_owner": 20, "owner": 20}
+MESSAGE_RATE = {
+    "offline": 0,
+    "online": 6, "normie": 8,
+    "rookie": 6, "star": 7, "champion": 7, "lucky": 6, "legend": 8,
+    "vip": 10, "mvps": 10,
+    "low_moderator": 12, "moderator": 20,
+    "low_admin": 20, "admin": 20,
+    "developer": 12, "super_admin": 20, "co_owner": 20, "owner": 20,
+}
 
 
 def level(role: str) -> int:

@@ -24,12 +24,13 @@ CREATE TABLE IF NOT EXISTS servers(
 CREATE TABLE IF NOT EXISTS memberships(
   server_id TEXT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  role TEXT NOT NULL DEFAULT 'student', timeout_until INTEGER NOT NULL DEFAULT 0,
+  role TEXT NOT NULL DEFAULT 'online', timeout_until INTEGER NOT NULL DEFAULT 0,
+  original_role TEXT, temp_role_until INTEGER NOT NULL DEFAULT 0,
   joined_at INTEGER NOT NULL, PRIMARY KEY(server_id, user_id));
 CREATE TABLE IF NOT EXISTS channels(
   id TEXT PRIMARY KEY, server_id TEXT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
   name TEXT NOT NULL, topic TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT 'text',
-  min_read INTEGER NOT NULL DEFAULT 1, min_post INTEGER NOT NULL DEFAULT 1,
+  min_read INTEGER NOT NULL DEFAULT 1, min_post INTEGER NOT NULL DEFAULT 2,
   position INTEGER NOT NULL DEFAULT 0, UNIQUE(server_id, name));
 CREATE TABLE IF NOT EXISTS messages(
   seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,
@@ -50,6 +51,42 @@ CREATE TABLE IF NOT EXISTS audit_log(
   action TEXT NOT NULL, target_id TEXT, detail TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL);
 """
 
+# Maps old role level numbers (1-9) to new level numbers for channel min_read/min_post.
+# Old: student(1) normie(2) helper(3) moderator(4) admin(5) developer(6) super_admin(7) co_owner(8) owner(9)
+# New: offline(1) online(2) normie(3) ... low_moderator(11) moderator(12) ... admin(14) ...
+_LEVEL_MAP_READ = {1: 1, 2: 3, 3: 11, 4: 12, 5: 14, 6: 16, 7: 15, 8: 17, 9: 18}
+_LEVEL_MAP_POST = {1: 2, 2: 3, 3: 11, 4: 12, 5: 14, 6: 16, 7: 15, 8: 17, 9: 18}
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """One-time migration from the old schema: add temp-role columns, rename roles,
+    remap channel levels, and rename the 'general' channel to 'global-chat'."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(memberships)").fetchall()}
+    if "original_role" in cols:
+        return  # already migrated
+
+    conn.execute("ALTER TABLE memberships ADD COLUMN original_role TEXT")
+    conn.execute("ALTER TABLE memberships ADD COLUMN temp_role_until INTEGER NOT NULL DEFAULT 0")
+
+    # Rename old roles to new names.
+    conn.execute("UPDATE memberships SET role='online' WHERE role='student'")
+    conn.execute("UPDATE memberships SET role='low_moderator' WHERE role='helper'")
+
+    # Remap channel min_read / min_post from old level numbers to new.
+    read_case = " ".join(f"WHEN {old} THEN {new}" for old, new in _LEVEL_MAP_READ.items())
+    post_case = " ".join(f"WHEN {old} THEN {new}" for old, new in _LEVEL_MAP_POST.items())
+    conn.execute(
+        f"UPDATE channels SET "
+        f"min_read = CASE min_read {read_case} ELSE min_read END, "
+        f"min_post = CASE min_post {post_case} ELSE min_post END"
+    )
+
+    # Rename 'general' channel to 'global-chat' (only if global-chat doesn't exist).
+    if not conn.execute("SELECT 1 FROM channels WHERE name='global-chat'").fetchone():
+        conn.execute(
+            "UPDATE channels SET name='global-chat', topic='Global chat for everyone.' WHERE name='general'"
+        )
+
 
 def hash_code(code: str) -> str:
     return hashlib.sha256(code.encode("utf-8")).hexdigest()
@@ -66,6 +103,7 @@ class Database:
         if path != ":memory:":
             self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
+        _migrate(self.conn)
 
     def q(self, sql: str, params: tuple = ()) -> list[dict]:
         with self.lock:
@@ -98,21 +136,23 @@ def seed(db: Database) -> dict[str, str]:
     if db.one("SELECT 1 FROM servers"):
         return codes
     now = int(time.time() * 1000)
+    # min_read/min_post use role LEVEL numbers from permissions.ROLE_LEVEL.
+    # Level 1 = offline (read only), 2 = online (can post), 11 = low_moderator, 12 = moderator.
     layout = [
         ("BCPS Hub", "The main hangout for BCPS students.", "#5b6cff", True, False, [
-            ("general", "Chat about anything school-appropriate.", 1, 1),
-            ("announcements", "Official news. Moderators and above can post.", 1, 4),
-            ("homework-help", "Ask for and give homework help.", 1, 1),
-            ("school-talk", "Classes, events and school life.", 1, 1),
-            ("gaming", "Games and game nights.", 1, 1),
-            ("clubs", "Find and promote school clubs.", 1, 1),
-            ("questions", "Questions about the server or school.", 1, 1),
-            ("staff-lounge", "Helpers and above only.", 3, 3),
+            ("global-chat", "Global chat for everyone.", 1, 2),
+            ("announcements", "Official news. Moderators and above can post.", 1, 12),
+            ("homework-help", "Ask for and give homework help.", 1, 2),
+            ("school-talk", "Classes, events and school life.", 1, 2),
+            ("gaming", "Games and game nights.", 1, 2),
+            ("clubs", "Find and promote school clubs.", 1, 2),
+            ("questions", "Questions about the server or school.", 1, 2),
+            ("staff-lounge", "Low Moderators and above only.", 11, 11),
         ]),
         ("Clubs Corner", "Space for clubs and activities.", "#1fb6a6", True, False, [
-            ("general", "Club chat.", 1, 1), ("robotics", "Robotics team.", 1, 1), ("art", "Art club.", 1, 1)]),
+            ("general", "Club chat.", 1, 2), ("robotics", "Robotics team.", 1, 2), ("art", "Art club.", 1, 2)]),
         ("Staff Room", "Invite-only space for staff roles.", "#e0527a", False, True, [
-            ("staff-chat", "Private staff discussion.", 1, 1)]),
+            ("staff-chat", "Private staff discussion.", 1, 2)]),
     ]
     for name, desc, color, auto_join, invite_only, chans in layout:
         sid = str(uuid.uuid4())

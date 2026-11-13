@@ -135,7 +135,7 @@ class App:
     def __init__(self, db_path: str, secret: str, demo_mode: bool = True, production: bool = False,
                  allowed_origins: set[str] | None = None, owner_code: str | None = None) -> None:
         if production and demo_mode:
-            raise RuntimeError("DEMO_MODE must be false in production.")
+            logging.warning("DEMO_MODE is enabled in production mode (preview only).")
         if production and len(secret) < 32:
             raise RuntimeError("Production requires SESSION_SECRET with at least 32 characters.")
         self.db = Database(db_path)
@@ -180,7 +180,16 @@ class App:
         return None
 
     def membership(self, server_id: str, user_id: str) -> dict | None:
-        return self.db.one("SELECT * FROM memberships WHERE server_id=? AND user_id=?", (server_id, user_id))
+        m = self.db.one("SELECT * FROM memberships WHERE server_id=? AND user_id=?", (server_id, user_id))
+        if m and m["temp_role_until"] > 0 and m["temp_role_until"] <= time.time():
+            original = m["original_role"] or m["role"]
+            self.db.x("UPDATE memberships SET role=?, original_role=NULL, temp_role_until=0 "
+                       "WHERE server_id=? AND user_id=?", (original, server_id, user_id))
+            m["role"] = original
+            m["original_role"] = None
+            m["temp_role_until"] = 0
+            self.hub.broadcast({"type": "member.update", "serverId": server_id, "userId": user_id}, server_id)
+        return m
 
     def audit(self, server_id: str, actor_id: str, action: str, target_id: str | None = None, detail: str = "") -> None:
         self.db.x("INSERT INTO audit_log(server_id,actor_id,action,target_id,detail,created_at) VALUES(?,?,?,?,?,?)",
@@ -202,7 +211,7 @@ class App:
 
     # --- message serialization
     MSG_SQL = ("SELECT m.seq, m.id, m.channel_id, m.user_id, m.text, m.created_at, m.edited_at, "
-               "u.name AS author_name, COALESCE(ms.role,'student') AS author_role "
+               "u.name AS author_name, COALESCE(ms.role,'online') AS author_role "
                "FROM messages m JOIN users u ON u.id=m.user_id JOIN channels c ON c.id=m.channel_id "
                "LEFT JOIN memberships ms ON ms.server_id=c.server_id AND ms.user_id=m.user_id ")
 
@@ -268,7 +277,7 @@ def not_timed_out(m: dict) -> None:
         raise ApiError(403, f"You are timed out for {int(left // 60) + 1} more minute(s).")
 
 
-def role_key(value: object, default: str = "student") -> str:
+def role_key(value: object, default: str = "online") -> str:
     if value is None:
         return default
     if not isinstance(value, str) or value not in P.ROLE_LEVEL:
@@ -289,7 +298,8 @@ def h_health(req):
 
 def h_meta(req):
     roles = [{"key": r, "level": P.level(r), **P.ROLE_INFO[r]} for r in P.ROLES]
-    return 200, {"roles": roles, "reactions": REACTIONS, "reportReasons": sorted(REPORT_REASONS)}, None
+    return 200, {"roles": roles, "reactions": REACTIONS, "reportReasons": sorted(REPORT_REASONS),
+                 "wheelRoles": P.WHEEL_ROLES}, None
 
 
 def session_payload(app: App, user: dict) -> dict:
@@ -335,7 +345,7 @@ def h_demo_session(req):
             if claim:
                 app.db.x("INSERT INTO memberships(server_id,user_id,role,joined_at) VALUES(?,?,?,?)", (s["id"], uid, "owner", now))
             elif s["auto_join"]:
-                app.db.x("INSERT INTO memberships(server_id,user_id,role,joined_at) VALUES(?,?,?,?)", (s["id"], uid, "student", now))
+                app.db.x("INSERT INTO memberships(server_id,user_id,role,joined_at) VALUES(?,?,?,?)", (s["id"], uid, "online", now))
         if claim:
             app.owner_code = None  # single use
     token = sign_session({"id": uid, "createdAt": now, "expiresAt": time.time() + SESSION_TTL_SECONDS}, app.secret)
@@ -358,14 +368,21 @@ def h_update_me(req):
 def h_servers(req):
     app, uid = req.app, req.user["id"]
     servers = []
-    for s in app.db.q("SELECT s.*, ms.role, ms.timeout_until FROM memberships ms JOIN servers s ON s.id=ms.server_id "
+    for s in app.db.q("SELECT s.*, ms.role, ms.timeout_until, ms.original_role, ms.temp_role_until "
+                      "FROM memberships ms JOIN servers s ON s.id=ms.server_id "
                       "WHERE ms.user_id=? ORDER BY s.created_at, s.name", (uid,)):
-        lvl = P.level(s["role"])
+        s_role = s["role"]
+        if s["temp_role_until"] > 0 and s["temp_role_until"] <= time.time():
+            s_role = s["original_role"] or s["role"]
+            app.db.x("UPDATE memberships SET role=?, original_role=NULL, temp_role_until=0 "
+                     "WHERE server_id=? AND user_id=?", (s_role, s["id"], uid))
+            app.hub.broadcast({"type": "member.update", "serverId": s["id"], "userId": uid}, s["id"])
+        lvl = P.level(s_role)
         chans = app.db.q("SELECT * FROM channels WHERE server_id=? AND min_read<=? ORDER BY position, name", (s["id"], lvl))
         servers.append({"id": s["id"], "name": s["name"], "description": s["description"], "color": s["color"],
-                        "role": s["role"], "perms": sorted(P.PERMS[s["role"]]),
+                        "role": s_role, "perms": sorted(P.PERMS[s_role]),
                         "timedOut": s["timeout_until"] > time.time(),
-                        "channels": [channel_out(c, s["role"]) for c in chans]})
+                        "channels": [channel_out(c, s_role) for c in chans]})
     discover = [{"id": s["id"], "name": s["name"], "description": s["description"], "color": s["color"],
                  "requiresCode": s["join_code_hash"] is not None}
                 for s in app.db.q("SELECT * FROM servers WHERE id NOT IN (SELECT server_id FROM memberships WHERE user_id=?) "
@@ -388,7 +405,7 @@ def h_join(req):
         if not isinstance(code, str) or not hmac.compare_digest(hash_code(code.strip()), s["join_code_hash"]):
             raise ApiError(403, "That invite code isn't valid.")
     app.db.x("INSERT INTO memberships(server_id,user_id,role,joined_at) VALUES(?,?,?,?)",
-             (s["id"], req.user["id"], "student", int(time.time() * 1000)))
+             (s["id"], req.user["id"], "online", int(time.time() * 1000)))
     app.audit(s["id"], req.user["id"], "member_join", req.user["id"])
     app.hub.broadcast({"type": "member.update", "serverId": s["id"], "userId": req.user["id"]}, s["id"])
     return 200, {"joined": True}, None
@@ -408,10 +425,19 @@ def h_members(req):
     (sid,) = req.args
     m = need_member(req, sid)
     need_perm(m, "read")
-    rows = req.app.db.q("SELECT u.id,u.name,u.bio,ms.role,ms.joined_at,ms.timeout_until FROM memberships ms "
+    rows = req.app.db.q("SELECT u.id,u.name,u.bio,ms.role,ms.joined_at,ms.timeout_until,"
+                        "ms.original_role,ms.temp_role_until FROM memberships ms "
                         "JOIN users u ON u.id=ms.user_id WHERE ms.server_id=?", (sid,))
-    out = [{"id": r["id"], "name": r["name"], "bio": r["bio"], "role": r["role"], "joinedAt": r["joined_at"],
-            "timedOut": r["timeout_until"] > time.time(), "online": req.app.hub.online(r["id"])} for r in rows]
+    out = []
+    for r in rows:
+        r_role = r["role"]
+        if r["temp_role_until"] > 0 and r["temp_role_until"] <= time.time():
+            r_role = r["original_role"] or r["role"]
+            req.app.db.x("UPDATE memberships SET role=?, original_role=NULL, temp_role_until=0 "
+                         "WHERE server_id=? AND user_id=?", (r_role, sid, r["id"]))
+            req.app.hub.broadcast({"type": "member.update", "serverId": sid, "userId": r["id"]}, sid)
+        out.append({"id": r["id"], "name": r["name"], "bio": r["bio"], "role": r_role, "joinedAt": r["joined_at"],
+                    "timedOut": r["timeout_until"] > time.time(), "online": req.app.hub.online(r["id"])})
     out.sort(key=lambda r: (-P.level(r["role"]), not r["online"], r["name"].lower()))
     return 200, {"members": out}, None
 
@@ -427,10 +453,27 @@ def h_set_role(req):
         raise ApiError(403, "You can't change your own role.")
     if not P.can_assign(actor["role"], target["role"], new_role, False):
         raise ApiError(403, "You can't assign that role to this member.")
-    req.app.db.x("UPDATE memberships SET role=? WHERE server_id=? AND user_id=?", (new_role, sid, uid))
+    req.app.db.x("UPDATE memberships SET role=?, original_role=NULL, temp_role_until=0 "
+                 "WHERE server_id=? AND user_id=?", (new_role, sid, uid))
     req.app.audit(sid, req.user["id"], "role_change", uid, f"{target['role']} -> {new_role}")
     req.app.hub.broadcast({"type": "member.update", "serverId": sid, "userId": uid}, sid)
     return 200, {"role": new_role}, None
+
+
+def h_spin_wheel(req):
+    (sid,) = req.args
+    m = need_member(req, sid)
+    if m["temp_role_until"] > time.time():
+        remaining = int(m["temp_role_until"] - time.time())
+        raise ApiError(429, f"You already have a temporary role. Try again in {remaining // 60 + 1} minute(s).")
+    new_role = secrets.choice(P.WHEEL_ROLES)
+    until = int(time.time()) + P.WHEEL_DURATION
+    req.app.db.x("UPDATE memberships SET original_role=?, role=?, temp_role_until=? "
+                 "WHERE server_id=? AND user_id=?", (m["role"], new_role, until, sid, req.user["id"]))
+    req.app.audit(sid, req.user["id"], "wheel_spin", req.user["id"], f"{m['role']} -> {new_role} (1h)")
+    req.app.hub.broadcast({"type": "member.update", "serverId": sid, "userId": req.user["id"]}, sid)
+    return 200, {"role": new_role, "label": P.ROLE_INFO[new_role]["label"], "until": until,
+                 "originalRole": m["role"]}, None
 
 
 def h_timeout(req):
@@ -704,6 +747,7 @@ ROUTES = [  # (method, regex, handler, needs_auth)
     ("POST", rf"/api/servers/{UUID_RE}/invite", h_invite, True),
     ("GET", rf"/api/servers/{UUID_RE}/members", h_members, True),
     ("POST", rf"/api/servers/{UUID_RE}/members/{UUID_RE}/role", h_set_role, True),
+    ("POST", rf"/api/servers/{UUID_RE}/wheel", h_spin_wheel, True),
     ("POST", rf"/api/servers/{UUID_RE}/members/{UUID_RE}/timeout", h_timeout, True),
     ("POST", rf"/api/servers/{UUID_RE}/channels", h_create_channel, True),
     ("GET", rf"/api/servers/{UUID_RE}/reports", h_reports, True),

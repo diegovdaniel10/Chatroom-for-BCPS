@@ -63,6 +63,14 @@ details{color:var(--muted);font-size:13px}details input{margin-top:8px}.error{co
 .member .avatar::after{content:"";position:absolute;right:-2px;bottom:-2px;width:11px;height:11px;border-radius:50%;background:var(--muted);border:2px solid var(--bg1)}
 .member:not(.off) .avatar::after{background:var(--ok)}.member .mn{color:var(--role);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .scrim{display:none}
+/* wheel */
+.wheel-btn{margin:0 8px 8px;padding:8px 12px;border-radius:8px;background:var(--bg2);color:var(--text);font-weight:600;font-size:13px;text-align:center}
+.wheel-btn:hover{background:var(--bg3)}
+.wheel-wrap{position:relative;width:220px;height:220px;margin:16px auto}
+.wheel{width:100%;height:100%;border-radius:50%;position:relative;box-shadow:0 0 0 4px var(--line),0 8px 30px #0006}
+.wheel-label{position:absolute;top:50%;left:50%;font-size:11px;font-weight:800;color:#10131a;text-shadow:0 1px 2px #fff5;pointer-events:none}
+.wheel-pointer{position:absolute;top:-14px;left:50%;transform:translateX(-50%);z-index:10;font-size:20px;filter:drop-shadow(0 2px 4px #0008)}
+.wheel-center{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:36px;height:36px;border-radius:50%;background:var(--bg1);border:3px solid var(--line);display:grid;place-items:center;z-index:5;font-size:16px}
 /* modal */
 dialog{border:1px solid var(--line);border-radius:14px;background:var(--bg1);color:var(--text);padding:0;width:min(560px,94vw);max-height:88vh;overflow:hidden}
 dialog::backdrop{background:#000a}.modal-head{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--line)}

@@ -47,7 +47,7 @@ function toast(msg, bad) {
 }
 const guard = (fn) => async (...a) => { try { await fn(...a); } catch (e) { toast(e.message, true); } };
 
-const role = (key) => state.roles[key] || state.roles.student;
+const role = (key) => state.roles[key] || state.roles.online;
 const cur = () => state.servers.find((s) => s.id === state.serverId);
 const curChan = () => (cur() ? cur().channels.find((c) => c.id === state.channelId) : null);
 const can = (perm) => !!cur() && cur().perms.includes(perm);
@@ -420,6 +420,51 @@ function openDiscover() {
   });
   openModal("Join a server", ...(items.length ? items : [h("div", { class: "muted", text: "You've joined every server available to you." })]));
 }
+
+// ---------------------------------------------------------------- role wheel
+function openWheel() {
+  const wheelRoles = state.meta.wheelRoles || [];
+  if (!wheelRoles.length || !state.serverId) return;
+  const n = wheelRoles.length;
+  const angle = 360 / n;
+  const colors = wheelRoles.map((k) => role(k).color);
+  const gradient = colors.map((c, i) => `${c} ${i * angle}deg ${(i + 1) * angle}deg`).join(", ");
+  const wheel = h("div", { class: "wheel", css: { background: `conic-gradient(${gradient})` } });
+  for (let i = 0; i < n; i++) {
+    const la = i * angle + angle / 2;
+    const rad = (la - 90) * Math.PI / 180;
+    wheel.append(h("div", { class: "wheel-label", css: {
+      transform: `translate(-50%, -50%) translate(${72 * Math.cos(rad)}px, ${72 * Math.sin(rad)}px)`,
+    }, text: role(wheelRoles[i]).badge }));
+  }
+  let spinning = false;
+  openModal("Spin the Wheel",
+    h("p", { class: "muted", text: "Spin to get a random temporary role! It lasts 1 hour, then your previous role returns." }),
+    h("div", { class: "wheel-wrap" },
+      h("div", { class: "wheel-pointer", text: "▼" }),
+      wheel,
+      h("div", { class: "wheel-center", text: "🎯" })),
+    h("div", { class: "row" }, h("button", { class: "primary", text: "Spin!", onclick: guard(async () => {
+      if (spinning) return;
+      spinning = true;
+      try {
+        const data = await api("POST", `/api/servers/${state.serverId}/wheel`);
+        const winIdx = wheelRoles.indexOf(data.role);
+        const target = 360 * 6 - winIdx * angle - angle / 2;
+        wheel.style.transition = "transform 3s cubic-bezier(0.17,0.67,0.12,0.99)";
+        wheel.style.transform = `rotate(${target}deg)`;
+        setTimeout(async () => {
+          closeModal();
+          toast(`You got ${data.label}! Enjoy it for 1 hour.`);
+          await loadServers(false);
+        }, 3500);
+      } catch (e) {
+        spinning = false;
+        toast(e.message, true);
+      }
+    }) })));
+}
+$("#btn-wheel").addEventListener("click", guard(openWheel));
 
 // ---------------------------------------------------------------- real-time
 function setConn(ok) {
